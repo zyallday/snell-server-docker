@@ -56,6 +56,18 @@ jobs:
           BIN_URL: https://dl.nssurge.com/snell/snell-server-v${{ steps.ver.outputs.version }}-linux-{arch}.zip
         run: |
           set -eu
+          # 失败时把每个容器的状态和日志写成 error 注解，在 Summary 页不展开日志也能看到。
+          report() {
+            rc=$?
+            [ "$rc" = 0 ] && return
+            for c in bundled download badsum; do
+              docker inspect "$c" >/dev/null 2>&1 || continue
+              st="$(docker inspect -f 'running={{.State.Running}} exit={{.State.ExitCode}} health={{if .State.Health}}{{.State.Health.Status}}{{end}}' "$c")"
+              logs="$(docker logs "$c" 2>&1 | tail -n 25 | sed -e 's/%/%25/g' | sed -e ':a;N;$!ba;s/\n/%0A/g')"
+              echo "::error title=smoke ${c} (${st})::${logs:-<no output>}"
+            done
+          }
+          trap report EXIT
           sha="$(sed -nE 's/^ARG SHA256_AMD64=([0-9a-f]{64})$/\1/p' Dockerfile)"
           start() {
             local name="$1"; shift
