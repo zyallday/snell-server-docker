@@ -58,6 +58,13 @@ pkg_arch() {
   esac
 }
 
+# 从 `snell-server -v` 的日志行中取出 "snell-server vX.Y.Z"。
+short_version() {
+  local v
+  v="$(printf '%s\n' "$1" | sed -nE 's/.*(snell-server v[^ ]+).*/\1/p' | head -n1)"
+  printf '%s' "${v:-$1}"
+}
+
 # 下载 SNELL_BIN_URL（官方 zip 或裸二进制），校验并试运行，成功后替换 SNELL_BIN。
 # 失败返回非 0，由调用方回退到镜像自带版本。
 fetch_binary() {
@@ -78,6 +85,8 @@ fetch_binary() {
     log "${SNELL_BIN_DIR} is not writable (with read_only, mount a tmpfs there)."
     return 1
   }
+  # mktemp -d 是 0700，降权后的用户需要进入目录才能试运行。
+  chmod 0755 "$work"
 
   log "Downloading snell-server from ${url}"
   if ! curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 120 \
@@ -115,6 +124,7 @@ fetch_binary() {
     log "Downloaded binary failed to run: ${ver:-unknown error} (tmpfs needs the exec option)."
     rm -rf "$work"; return 1
   fi
+  ver="$(short_version "$ver")"
 
   mv -f "$bin" "${SNELL_BIN_DIR}/snell-server"
   rm -rf "$work"
@@ -225,7 +235,7 @@ fi
 if [[ -n "${SNELL_BIN_URL:-}" ]]; then
   assert_no_ctrl SNELL_BIN_URL "$SNELL_BIN_URL"
   if ! fetch_binary; then
-    log "WARNING: falling back to bundled $(/usr/local/bin/snell-server -v 2>&1 | head -n1)."
+    log "WARNING: falling back to bundled $(short_version "$(/usr/local/bin/snell-server -v 2>&1)")."
   fi
 fi
 
