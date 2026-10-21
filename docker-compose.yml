@@ -58,3 +58,42 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # ---- 可选：ShadowTLS v3，把 snell 流量包装成访问 SHADOW_TLS_SNI 的 HTTPS ----
+  # 启用：在 .env 中设置 COMPOSE_PROFILES=shadow-tls 和 SHADOW_TLS_PASSWORD，
+  # 路由器只转发 SHADOW_TLS_PORT，不再转发 SNELL_PORT。
+  shadow-tls:
+    profiles: ["shadow-tls"]
+    image: ghcr.io/ihciah/shadow-tls:v0.2.25
+    container_name: shadow-tls
+    restart: unless-stopped
+    depends_on:
+      - snell
+    # 没设密码时直接退出，避免以空密码运行。
+    entrypoint:
+      - /bin/sh
+      - -c
+      - '[ -n "$$PASSWORD" ] || { echo "SHADOW_TLS_PASSWORD is required" >&2; exit 1; }; exec /entrypoint.sh'
+    environment:
+      MODE: server
+      V3: "1"
+      STRICT: "1"
+      LISTEN: 0.0.0.0:${SHADOW_TLS_PORT:-8443}
+      # 转发给同一 compose 网络里的 snell；需与 snell 实际监听端口一致
+      SERVER: snell:${SNELL_PORT:-7177}
+      # 握手借用的真实网站，必须支持 TLS 1.3，且群晖/服务器能访问到
+      TLS: ${SHADOW_TLS_SNI:-www.microsoft.com}:443
+      PASSWORD: ${SHADOW_TLS_PASSWORD:-}
+    ports:
+      - "${SHADOW_TLS_PORT:-8443}:${SHADOW_TLS_PORT:-8443}/tcp"
+    user: "65534:65534"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

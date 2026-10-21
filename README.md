@@ -90,6 +90,89 @@ docker compose up -d   # 改了 .env 会自动重建容器；只想重新下载�
 - 二进制存放在 tmpfs `/var/lib/snell`（compose 已配置，需带 `exec`），不写入宿主机；每次启动都会重新下载。
 - 不设置 `SNELL_BIN_SHA256` 时不做完整性校验，日志里会打印下载文件的 sha256 供核对。这相当于在容器里执行该 URL 提供的任意程序，只应指向你信任的地址。
 
+## 可选：ShadowTLS（伪装成 HTTPS）
+
+部分家宽运营商会识别流量类型：普通 HTTP/HTTPS 不限速，识别不出来的上行流量（snell、iperf3 等）被压到几 Mbps。ShadowTLS v3 会借用一个真实网站的 TLS 握手，把 snell 流量包装成访问该网站的 HTTPS 连接。
+
+> 能否绕过限速取决于运营商的识别方式，部署后请实测。判断是否属于这种情况：从外网用 curl 单连接下载家里的 HTTP 文件速度正常，而 `iperf3 -R` 很慢。
+
+在 `.env` 中启用：
+
+```bash
+COMPOSE_PROFILES=shadow-tls
+SHADOW_TLS_PASSWORD=<随机字符串>
+SHADOW_TLS_PORT=8443
+SHADOW_TLS_SNI=www.microsoft.com   # 须支持 TLS 1.3，服务器能访问到
+```
+
+```bash
+docker compose up -d
+```
+
+- 路由器只转发 `SHADOW_TLS_PORT`（外部端口可以随意，如 `18443 → 8443`），**不再转发** snell 端口。国内家宽通常封 80/443。
+- shadow-tls 容器以 nobody 用户、只读文件系统、无 capability 运行；未设置 `SHADOW_TLS_PASSWORD` 时会直接退出。
+
+Surge 配置（端口填路由器的外部端口）：
+
+```ini
+[Proxy]
+MySnell = snell, <服务器地址>, 8443, psk=<PSK>, version=6, shadow-tls-password=<SHADOW_TLS_PASSWORD>, shadow-tls-sni=www.microsoft.com, shadow-tls-version=3
+```
+
+## 群晖（Container Manager）部署
+
+DSM 7.2+ 的 Container Manager → 项目 → 新增，路径选 `/volume1/docker/snell-server`，直接粘贴下面的 compose（不需要 `.env`，值直接写在文件里）：
+
+```yaml
+services:
+  snell:
+    image: ghcr.io/zyallday/snell-server:latest
+    container_name: snell-server
+    restart: unless-stopped
+    network_mode: host            # 用宿主机网络，代理才能访问群晖自身和局域网
+    volumes:
+      - ./config:/etc/snell
+    tmpfs:
+      - /var/lib/snell:exec,size=64m,mode=0755
+    environment:
+      PUID: 1026                  # SSH 执行 `id <用户名>` 查看；不设则为 1000
+      PGID: 100
+      SNELL_PSK: <32 位字母数字>
+      SNELL_PORT: 7177
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+
+  # 可选：不需要 ShadowTLS 时删掉整个服务
+  shadow-tls:
+    image: ghcr.io/ihciah/shadow-tls:v0.2.25
+    container_name: shadow-tls
+    restart: unless-stopped
+    network_mode: host
+    depends_on: [snell]
+    environment:
+      MODE: server
+      V3: "1"
+      STRICT: "1"
+      LISTEN: 0.0.0.0:8443
+      SERVER: 127.0.0.1:7177      # host 网络下直接连本机 snell
+      TLS: www.microsoft.com:443
+      PASSWORD: <另一个随机字符串>
+    user: "65534:65534"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+```
+
+群晖上的注意事项：
+
+- **先在 File Station 建好 `config` 文件夹**。Container Manager 不会自动创建挂载目录，否则报 `Bind mount failed: ... does not exist`。
+- **PUID/PGID** 只决定生成的配置文件归谁所有。设成自己的 DSM 账号，才能在 File Station 里查看、编辑 `snell-server.conf`。
+- **用 host 网络**。默认 bridge 网络下，通过代理访问群晖自身（如 DSM 5001）会被拦截；host 网络下 `ports` 不起作用，可以省略。
+- 环境变量只在 `config/snell-server.conf` 不存在时用于生成配置。之后要改 PSK/端口，可以直接编辑这个文件后重启，或删掉它再重新构建项目。
+- DSM 防火墙开启时，放行对外的端口（7177 或 8443）。
+
 ## 预构建镜像
 
 GitHub Actions（[`.github/workflows/docker.yml`](.github/workflows/docker.yml)）会自动构建 `amd64` / `arm64` / `386` 镜像并推送到 GHCR：

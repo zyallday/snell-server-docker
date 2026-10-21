@@ -97,6 +97,49 @@ jobs:
           docker exec download cat /proc/1/cmdline | tr '\0' ' ' | grep -q '^/var/lib/snell/snell-server '
           echo "All smoke tests passed."
 
+      # 1) 用仓库里的 docker-compose.yml 启用 shadow-tls profile，确认两个容器都正常运行；
+      # 2) 用同样的权限设置跑一个 ShadowTLS v3 服务端 + 客户端，确认数据能穿过去。
+      - name: ShadowTLS smoke test
+        env:
+          STLS_IMAGE: ghcr.io/ihciah/shadow-tls:v0.2.25
+          SNI: www.microsoft.com
+          PW: ci-test-password
+        run: |
+          set -eu
+          report() {
+            rc=$?
+            [ "$rc" = 0 ] && return
+            for c in snell-server shadow-tls stls-web stls-server stls-client; do
+              docker inspect "$c" >/dev/null 2>&1 || continue
+              st="$(docker inspect -f 'running={{.State.Running}} exit={{.State.ExitCode}} restarts={{.RestartCount}}' "$c")"
+              logs="$(docker logs "$c" 2>&1 | tail -n 25 | sed -e 's/%/%25/g' | sed -e ':a;N;$!ba;s/\n/%0A/g')"
+              echo "::error title=shadow-tls ${c} (${st})::${logs:-<no output>}"
+            done
+          }
+          trap report EXIT
+
+          printf '%s\n' SNELL_IMAGE=snell-test SNELL_VERSION=latest \
+            COMPOSE_PROFILES=shadow-tls SHADOW_TLS_PASSWORD="$PW" > .env
+          docker compose -p ci up -d --no-build
+          sleep 10
+          for c in snell-server shadow-tls; do
+            st="$(docker inspect -f '{{.State.Running}} {{.RestartCount}}' "$c")"
+            echo "$c: running/restarts = $st"
+            [ "$st" = "true 0" ]
+          done
+
+          docker network create stls >/dev/null
+          docker run -d --name stls-web --network stls python:3.12-alpine python -m http.server 8000 >/dev/null
+          docker run -d --name stls-server --network stls \
+            --user 65534:65534 --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+            -e MODE=server -e V3=1 -e STRICT=1 -e LISTEN=0.0.0.0:8443 -e SERVER=stls-web:8000 \
+            -e TLS="$SNI:443" -e PASSWORD="$PW" "$STLS_IMAGE" >/dev/null
+          docker run -d --name stls-client --network stls -p 127.0.0.1:9000:9000 \
+            -e MODE=client -e V3=1 -e LISTEN=0.0.0.0:9000 -e SERVER=stls-server:8443 \
+            -e TLS="$SNI" -e PASSWORD="$PW" "$STLS_IMAGE" >/dev/null
+          curl -fsS --retry 10 --retry-delay 2 --retry-all-errors --max-time 10 http://127.0.0.1:9000/ | grep -q "Directory listing"
+          echo "ShadowTLS passthrough works."
+
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
