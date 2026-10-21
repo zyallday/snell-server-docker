@@ -67,9 +67,29 @@ sudo chown 1000:1000 config/snell-server.conf   # 或在 .env 中设置 PUID/PGI
 | `SNELL_LOG_LEVEL` | `notify` | `trace` / `verbose` / `notify` / `warning` |
 | `PUID` / `PGID` | `1000` | 运行 snell 的用户，需能读取配置文件 |
 
-## 多架构构建
+## 预构建镜像
 
-`docker compose build` 只构建本机架构。要构建多架构镜像并推送到仓库：
+GitHub Actions（[`.github/workflows/docker.yml`](.github/workflows/docker.yml)）会自动构建 `amd64` / `arm64` / `386` 镜像并推送到 GHCR：
+
+| 触发 | 推送的标签 |
+|---|---|
+| 推送到 `main` | `<SNELL_VERSION>`、`latest`、`sha-<短哈希>` |
+| 推送 `v*` 标签 | 同名标签（如 `v6.0.0`） |
+| Pull Request | 只构建验证，不推送 |
+
+版本号取自 `Dockerfile` 中的 `ARG SNELL_VERSION`。不想在服务器上本地构建时，在 `.env` 里设置：
+
+```bash
+SNELL_IMAGE=ghcr.io/zyallday/snell-server
+```
+
+然后 `docker compose pull && docker compose up -d`。
+
+> GHCR 新建的包默认是私有的。首次推送后，到 GitHub 个人主页 → Packages → snell-server → Package settings 改为 Public，否则拉取前需要 `docker login ghcr.io`。
+
+## 手动多架构构建
+
+`docker compose build` 只构建本机架构。要自己构建多架构镜像并推送到仓库：
 
 ```bash
 make buildx-push IMAGE=ghcr.io/<you>/snell-server
