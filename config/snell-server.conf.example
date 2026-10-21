@@ -1,0 +1,14 @@
+# 复制为 snell-server.conf 即可让容器直接使用该文件（此时 SNELL_* 生成变量被忽略）。
+# 注意：值中「空格 + ;」会被当作行内注释截断，PSK 建议只用字母数字。
+
+[snell-server]
+# 多个地址用逗号分隔，如 0.0.0.0:7177,[::]:7177；端口需与 docker-compose 的 ports 映射一致
+listen = 0.0.0.0:7177
+# 必填，12-255 字节；可用 `openssl rand -base64 32 | tr -dc A-Za-z0-9` 生成
+psk = CHANGE_ME_TO_A_RANDOM_PSK
+# default | unshaped | unsafe-raw，客户端需一致
+mode = default
+# default | prefer-ipv4 | prefer-ipv6 | ipv4-only | ipv6-only
+dns-ip-preference = default
+# dns = 1.1.1.1,8.8.8.8
+# egress-interface = eth0

@@ -1,0 +1,54 @@
+services:
+  snell:
+    build:
+      context: .
+      args:
+        SNELL_VERSION: ${SNELL_VERSION:-6.0.0}
+      # 本机 `docker compose build` 只构建当前架构；多架构见 Makefile 的 buildx 目标。
+    image: ${SNELL_IMAGE:-snell-server}:${SNELL_VERSION:-6.0.0}
+    container_name: snell-server
+    restart: unless-stopped
+
+    # 配置目录：放入 snell-server.conf 则直接使用；不存在时按下方环境变量生成并保存在这里。
+    volumes:
+      - ./config:/etc/snell
+
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      SNELL_LOG_LEVEL: ${SNELL_LOG_LEVEL:-notify}
+      # ---- 以下仅在配置文件不存在时生效 ----
+      SNELL_PSK: ${SNELL_PSK:-}                 # 留空则生成随机 PSK，写入配置文件
+      SNELL_PORT: ${SNELL_PORT:-7177}
+      SNELL_LISTEN: ${SNELL_LISTEN:-}           # 设置后覆盖 SNELL_PORT，如 0.0.0.0:7177,[::]:7177
+      SNELL_MODE: ${SNELL_MODE:-default}        # default | unshaped | unsafe-raw
+      SNELL_DNS: ${SNELL_DNS:-}                 # 如 1.1.1.1,8.8.8.8
+      SNELL_DNS_IP_PREFERENCE: ${SNELL_DNS_IP_PREFERENCE:-default}
+      SNELL_EGRESS_INTERFACE: ${SNELL_EGRESS_INTERFACE:-}
+
+    # 宿主机端口:容器端口，容器端口需与配置文件中的 listen 端口一致。
+    ports:
+      - "${SNELL_PORT:-7177}:${SNELL_PORT:-7177}/tcp"
+    # 需要原生 IPv6 / 多 listen 地址时，可改用宿主机网络（并删除上面的 ports）：
+    # network_mode: host
+
+    # 最小权限：只保留入口脚本准备文件、降权所需的能力；snell 本身以 PUID 运行，无任何 capability。
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

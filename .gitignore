@@ -1,0 +1,4 @@
+.env
+config/*.conf
+!config/*.conf.example
+.DS_Store
