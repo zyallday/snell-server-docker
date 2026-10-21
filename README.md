@@ -66,6 +66,29 @@ sudo chown 1000:1000 config/snell-server.conf   # 或在 .env 中设置 PUID/PGI
 |---|---|---|
 | `SNELL_LOG_LEVEL` | `notify` | `trace` / `verbose` / `notify` / `warning` |
 | `PUID` / `PGID` | `1000` | 运行 snell 的用户，需能读取配置文件 |
+| `SNELL_BIN_URL` | – | 启动时下载并使用该版本，见下文 |
+| `SNELL_BIN_SHA256` | – | `SNELL_BIN_URL` 下载文件的 sha256 |
+
+## 不重建镜像升级 Snell
+
+设置 `SNELL_BIN_URL` 后，容器每次启动会先下载它，再用它启动：
+
+```bash
+# .env
+SNELL_BIN_URL=https://dl.nssurge.com/snell/snell-server-v6.0.1-linux-{arch}.zip
+SNELL_BIN_SHA256=<本机架构对应 zip 的 sha256>
+```
+
+```bash
+docker compose up -d   # 改了 .env 会自动重建容器；只想重新下载用 docker compose restart
+```
+
+- 支持官方 zip，也支持直接指向二进制文件；只接受 `https://`。
+- `{arch}` 会替换成官方包的架构名 `amd64` / `aarch64` / `i386`，同一个 `.env` 可用于不同机器。
+- 下载后会校验 sha256（如设置），再以 PUID 身份执行 `snell-server -v` 试运行，全部通过才使用。
+- **任何一步失败都会回退到镜像自带的版本**并在日志里打印 `WARNING: falling back ...`，保证服务能起来。用 `docker compose logs snell` 确认实际运行的版本。
+- 二进制存放在 tmpfs `/var/lib/snell`（compose 已配置，需带 `exec`），不写入宿主机；每次启动都会重新下载。
+- 不设置 `SNELL_BIN_SHA256` 时不做完整性校验，日志里会打印下载文件的 sha256 供核对。这相当于在容器里执行该 URL 提供的任意程序，只应指向你信任的地址。
 
 ## 预构建镜像
 

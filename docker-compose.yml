@@ -12,11 +12,17 @@ services:
     # 配置目录：放入 snell-server.conf 则直接使用；不存在时按下方环境变量生成并保存在这里。
     volumes:
       - ./config:/etc/snell
+    # SNELL_BIN_URL 下载的二进制放在这里（根文件系统只读）；必须带 exec，否则无法运行。
+    tmpfs:
+      - /var/lib/snell:exec,size=64m,mode=0755
 
     environment:
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
       SNELL_LOG_LEVEL: ${SNELL_LOG_LEVEL:-notify}
+      # 设置后每次启动先下载该版本再运行，失败则回退到镜像自带版本；{arch} 会替换为 amd64/aarch64/i386
+      SNELL_BIN_URL: ${SNELL_BIN_URL:-}
+      SNELL_BIN_SHA256: ${SNELL_BIN_SHA256:-}   # 可选，强烈建议设置
       # ---- 以下仅在配置文件不存在时生效 ----
       SNELL_PSK: ${SNELL_PSK:-}                 # 留空则生成随机 PSK，写入配置文件
       SNELL_PORT: ${SNELL_PORT:-7177}

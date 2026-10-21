@@ -34,6 +34,94 @@ random_psk() {
   head -c 64 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32
 }
 
+# 实际启动的二进制；设置了 SNELL_BIN_URL 且下载成功时会被替换。
+SNELL_BIN=/usr/local/bin/snell-server
+SNELL_BIN_DIR="${SNELL_BIN_DIR:-/var/lib/snell}"
+
+# 以运行 snell 的用户身份执行命令（root 时降权，否则直接执行）。
+as_snell() {
+  if [[ "$(id -u)" == "0" ]]; then
+    setpriv --reuid="$PUID" --regid="$PGID" --clear-groups -- "$@"
+  else
+    "$@"
+  fi
+}
+
+# 官方安装包的架构名：amd64 / aarch64 / i386。
+# 用 dpkg 而不是 uname -m：386 镜像跑在 amd64 内核上时 uname 会返回 x86_64。
+pkg_arch() {
+  case "$(dpkg --print-architecture)" in
+    amd64) echo amd64 ;;
+    arm64) echo aarch64 ;;
+    i386)  echo i386 ;;
+    *)     dpkg --print-architecture ;;
+  esac
+}
+
+# 下载 SNELL_BIN_URL（官方 zip 或裸二进制），校验并试运行，成功后替换 SNELL_BIN。
+# 失败返回非 0，由调用方回退到镜像自带版本。
+fetch_binary() {
+  local url="$SNELL_BIN_URL" sum="${SNELL_BIN_SHA256:-}" work bin
+  url="${url//\{arch\}/$(pkg_arch)}"
+
+  if [[ ! "$url" =~ ^https://[^[:space:]]+$ ]]; then
+    log "SNELL_BIN_URL must be an https:// URL."
+    return 1
+  fi
+  if [[ -n "$sum" && ! "$sum" =~ ^[0-9A-Fa-f]{64}$ ]]; then
+    log "SNELL_BIN_SHA256 must be 64 hex characters."
+    return 1
+  fi
+
+  mkdir -p "$SNELL_BIN_DIR" 2>/dev/null || true
+  work="$(mktemp -d "${SNELL_BIN_DIR}/dl.XXXXXX" 2>/dev/null)" || {
+    log "${SNELL_BIN_DIR} is not writable (with read_only, mount a tmpfs there)."
+    return 1
+  }
+
+  log "Downloading snell-server from ${url}"
+  if ! curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 120 \
+         --max-filesize 104857600 --retry 2 -o "$work/pkg" "$url"; then
+    log "Download failed."
+    rm -rf "$work"; return 1
+  fi
+
+  if [[ -n "$sum" ]]; then
+    if ! echo "${sum,,}  $work/pkg" | sha256sum -c --status -; then
+      log "SHA256 mismatch (got $(sha256sum "$work/pkg" | cut -d' ' -f1))."
+      rm -rf "$work"; return 1
+    fi
+    log "SHA256 verified."
+  else
+    log "SNELL_BIN_SHA256 not set; download is NOT verified ($(sha256sum "$work/pkg" | cut -d' ' -f1))."
+  fi
+
+  # zip（PK 开头）里取 snell-server，否则当作裸二进制。
+  if [[ "$(head -c 2 "$work/pkg")" == "PK" ]]; then
+    mkdir "$work/x"
+    if ! unzip -q -j -o "$work/pkg" -d "$work/x" || [[ ! -f "$work/x/snell-server" ]]; then
+      log "Archive does not contain snell-server."
+      rm -rf "$work"; return 1
+    fi
+    bin="$work/x/snell-server"
+  else
+    bin="$work/pkg"
+  fi
+  chmod 0755 "$bin"
+
+  # 能在当前架构加载、依赖库齐全才算成功；tmpfs 带 noexec 时也会在这里失败。
+  local ver
+  if ! ver="$(as_snell timeout 10 "$bin" -v 2>&1)"; then
+    log "Downloaded binary failed to run: ${ver:-unknown error} (tmpfs needs the exec option)."
+    rm -rf "$work"; return 1
+  fi
+
+  mv -f "$bin" "${SNELL_BIN_DIR}/snell-server"
+  rm -rf "$work"
+  SNELL_BIN="${SNELL_BIN_DIR}/snell-server"
+  log "Using downloaded ${SNELL_BIN}: ${ver}"
+}
+
 generate_config() {
   local psk="${SNELL_PSK:-}"
   local port="${SNELL_PORT:-7177}"
@@ -134,7 +222,14 @@ else
   generate_config
 fi
 
-cmd=(/usr/local/bin/snell-server -l "$SNELL_LOG_LEVEL" -c "$SNELL_CONFIG")
+if [[ -n "${SNELL_BIN_URL:-}" ]]; then
+  assert_no_ctrl SNELL_BIN_URL "$SNELL_BIN_URL"
+  if ! fetch_binary; then
+    log "WARNING: falling back to bundled $(/usr/local/bin/snell-server -v 2>&1 | head -n1)."
+  fi
+fi
+
+cmd=("$SNELL_BIN" -l "$SNELL_LOG_LEVEL" -c "$SNELL_CONFIG")
 
 if [[ "$(id -u)" == "0" ]]; then
   # 降权后必须能读到配置文件；不擅自修改用户自己提供的文件的属主。

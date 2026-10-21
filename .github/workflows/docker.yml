@@ -40,6 +40,51 @@ jobs:
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
+      # 推送前先在 amd64 上实际启动镜像，覆盖自带二进制、下载新版本、校验失败回退三种情况。
+      - name: Build test image (amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          build-args: SNELL_VERSION=${{ steps.ver.outputs.version }}
+          load: true
+          tags: snell-test
+          cache-from: type=gha
+
+      - name: Smoke test
+        env:
+          BIN_URL: https://dl.nssurge.com/snell/snell-server-v${{ steps.ver.outputs.version }}-linux-{arch}.zip
+        run: |
+          set -eu
+          sha="$(sed -nE 's/^ARG SHA256_AMD64=([0-9a-f]{64})$/\1/p' Dockerfile)"
+          start() {
+            local name="$1"; shift
+            docker run -d --name "$name" --read-only \
+              --tmpfs /var/lib/snell:exec,size=64m,mode=0755 \
+              --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETUID --cap-add SETGID \
+              --security-opt no-new-privileges:true "$@" snell-test >/dev/null
+          }
+          start bundled
+          start download -e SNELL_BIN_URL="$BIN_URL" -e SNELL_BIN_SHA256="$sha"
+          start badsum   -e SNELL_BIN_URL="$BIN_URL" -e SNELL_BIN_SHA256="$(printf '0%.0s' {1..64})"
+
+          for c in bundled download badsum; do
+            for i in $(seq 1 30); do
+              s="$(docker inspect -f '{{.State.Health.Status}}' "$c")"
+              [ "$s" = healthy ] && break
+              [ "$(docker inspect -f '{{.State.Running}}' "$c")" = true ] || break
+              sleep 5
+            done
+            echo "::group::$c logs ($s)"; docker logs "$c" 2>&1; echo "::endgroup::"
+            [ "$s" = healthy ] || { echo "$c is not healthy" >&2; exit 1; }
+          done
+
+          docker logs download 2>&1 | grep -q "Using downloaded /var/lib/snell/snell-server"
+          docker logs badsum   2>&1 | grep -q "SHA256 mismatch"
+          docker logs badsum   2>&1 | grep -q "falling back to bundled"
+          docker exec download cat /proc/1/cmdline | tr '\0' ' ' | grep -q '^/var/lib/snell/snell-server '
+          echo "All smoke tests passed."
+
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3

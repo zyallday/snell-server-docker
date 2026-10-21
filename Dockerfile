@@ -39,13 +39,14 @@ LABEL org.opencontainers.image.title="snell-server" \
       org.opencontainers.image.version="${SNELL_VERSION}" \
       org.opencontainers.image.description="Snell proxy server (official binary from nssurge.com)"
 
-# libstdc++6 是运行依赖；util-linux 提供 setpriv，用于以 root 修正目录权限后降权运行。
+# libstdc++6 是运行依赖；util-linux 提供 setpriv，用于以 root 修正目录权限后降权运行；
+# curl / unzip / ca-certificates 用于 SNELL_BIN_URL 启动时下载新版本。
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libstdc++6 util-linux \
+ && apt-get install -y --no-install-recommends libstdc++6 util-linux ca-certificates curl unzip \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd --system --gid 1000 snell \
  && useradd --system --uid 1000 --gid snell --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin snell \
- && mkdir -p /etc/snell
+ && mkdir -p /etc/snell /var/lib/snell
 
 COPY --from=downloader /out-snell-server /usr/local/bin/snell-server
 COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/entrypoint.sh
@@ -58,7 +59,8 @@ ENV SNELL_CONFIG=/etc/snell/snell-server.conf
 VOLUME ["/etc/snell"]
 EXPOSE 7177/tcp
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+# start-period 留出 SNELL_BIN_URL 下载的时间。
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
   CMD ["/usr/local/bin/healthcheck.sh"]
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
